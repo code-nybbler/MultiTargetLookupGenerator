@@ -1,6 +1,7 @@
 ﻿using McTools.Xrm.Connection;
 using Microsoft.Crm.Sdk.Messages;
 using Microsoft.Xrm.Sdk;
+using Microsoft.Xrm.Sdk.Messages;
 using Microsoft.Xrm.Sdk.Metadata;
 using Microsoft.Xrm.Sdk.Query;
 using System;
@@ -17,7 +18,7 @@ namespace MultiTargetLookupGenerator
     {
         private Dictionary<string, Guid> solutions;
         private List<EntityMetadata> entities;
-        private string prefix, entity, schemaFormat, solution;
+        private string prefix, entity, schemaFormat, solution, schemaName, logicalName;
         private int requirement;
 
         public MultiTargetLookupGeneratorControl()
@@ -35,7 +36,16 @@ namespace MultiTargetLookupGenerator
         }
         private void btn_Create_Click(object sender, EventArgs e)
         {
-            ExecuteMethodAsync(CreateLookup, "Creating polymorphic lookup...");            
+            schemaName = prefix + ApplySelectedFormat(txt_Label.Text);
+            logicalName = schemaName.ToLower();
+            if (CheckFieldNameConflict())
+            {
+                ShowErrorDialog(new Exception("An attribute with the same logical name already exists."), "Name conflict found");
+            }
+            else
+            {
+                ExecuteMethodAsync(CreateLookup, "Creating polymorphic lookup...");
+            }            
         }
         private void btn_Publish_Click(object sender, EventArgs e)
         {
@@ -58,6 +68,7 @@ namespace MultiTargetLookupGenerator
         }
         private void tsb_LoadEntities_Click(object sender, EventArgs e)
         {
+            ClearInputs();
             ExecuteMethod(LoadEntities);
         }
         private void box_Requirement_SelectedIndexChanged(object sender, EventArgs e)
@@ -97,6 +108,14 @@ namespace MultiTargetLookupGenerator
 
             return source;
         }
+        private bool CheckFieldNameConflict()
+        {
+            return (entities.Where(e => e.Attributes.Where(a => a.LogicalName == logicalName).FirstOrDefault() != null).FirstOrDefault() != null);
+        }
+        private bool CheckRelationshipNameConflict(string relName)
+        {
+            return (entities.Where(e => e.ManyToOneRelationships.Where(r => r.SchemaName.ToLower() == relName).FirstOrDefault() != null).FirstOrDefault() != null);
+        }
         private void CheckSelections()
         {
             if (box_Solution.SelectedItem == null || box_Entity.SelectedItem == null || txt_Label.Text.Length == 0 || box_Requirement.SelectedItem == null || lst_Format.SelectedItem == null || lst_Targets.CheckedItems.Count == 0)
@@ -108,17 +127,60 @@ namespace MultiTargetLookupGenerator
                 btn_Create.Enabled = true;                
             }
         }
+        private void ClearInputs()
+        {
+            box_Solution.Text = String.Empty;
+            box_Entity.Text = String.Empty;
+            txt_Label.Text = String.Empty;
+            box_Requirement.SelectedItem = null;
+        }
+        private bool ConfirmCreation()
+        {
+            try
+            {
+                // Create the request
+                RetrieveAttributeRequest attributeRequest = new RetrieveAttributeRequest
+                {
+                    EntityLogicalName = entity,
+                    LogicalName = logicalName,
+                    RetrieveAsIfPublished = true
+                };
+
+                // Execute the request
+                RetrieveAttributeResponse attributeResponse =
+                    (RetrieveAttributeResponse)Service.Execute(attributeRequest);
+
+                Console.WriteLine("Retrieved the attribute {0}.",
+                    attributeResponse.AttributeMetadata.SchemaName);
+
+                return true;
+            }
+            catch (Exception ex)
+            {
+                return false;
+            }
+        }
         private void CreateLookup()
         {
             List<OneToManyRelationshipMetadata> targets = new List<OneToManyRelationshipMetadata>();
             OneToManyRelationshipMetadata newTargetMeta;
+
+            string relName;
             foreach (string target in lst_Targets.CheckedItems)
             {
+                relName = prefix + "poly_" + entity + "_" + target;
+
+                // append number to relationship schema if there's a conflict
+                for (int i=1; CheckRelationshipNameConflict(relName);)
+                {
+                    relName += i;
+                }
+
                 newTargetMeta = new OneToManyRelationshipMetadata
                 {
                     ReferencedEntity = target,
                     ReferencingEntity = entity,
-                    SchemaName = prefix + "poly_" + entity + "_" + target
+                    SchemaName = relName
                 };
                 targets.Add(newTargetMeta);
             }
@@ -129,7 +191,7 @@ namespace MultiTargetLookupGenerator
                 {
                     Lookup = new LookupAttributeMetadata()
                     {
-                        SchemaName = prefix + ApplySelectedFormat(txt_Label.Text),
+                        SchemaName = schemaName,
                         DisplayName = new Label(txt_Label.Text, 1033),
                         RequiredLevel = new AttributeRequiredLevelManagedProperty((AttributeRequiredLevel)requirement)
                     },
@@ -141,7 +203,7 @@ namespace MultiTargetLookupGenerator
             }
             catch (Exception ex)
             {
-                throw new Exception(ex.Message);
+                //throw new Exception(ex.Message);
             }
         }
         private void DisableInputs()
@@ -185,6 +247,12 @@ namespace MultiTargetLookupGenerator
                     // This code is executed in the main thread
                     EnableInputs();
                     btn_Publish.Enabled = !btn_Publish.Enabled;
+
+                    bool created = ConfirmCreation();
+                    if (!created)
+                    {
+                        ShowErrorDialog(new Exception("Field creation failed - Check relationship limitations on selected tables."), "Field creation failed");
+                    }
                 },
                 AsyncArgument = null,
                 // Progress information panel size
